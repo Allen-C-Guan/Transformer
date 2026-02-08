@@ -257,6 +257,109 @@ class MultiHeadAttentionBlock(nn.Module):
         # (batch_size, seq_len, d_model) -> (batch_size, seq_len, d_model)
         return self.w_0(x)
 
+class ResidualConnection(nn.Module):
+    def __init__(self, dropout: float):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = LayNormalization()
+
+    # 残差网路中，输入是x和skip layer模型，利用x和模型输出的结果y，完成了一次x+y的add和norm，
+    # 针对于只有一个入参的sublayer的接口约定，更加抽象，更简洁，更普世
+    def forward(self, x, sublayer):  #这里对sublayer要求只要是个一个入参为一个值的，callable的对象即可！
+        x = x + self.dropout(sublayer(self.norm(x))) # 如果sublayer有入参咋弄？ 可以通过lambda封装为只有一个入参！
+
+class EncoderBlock(nn.Module):
+    def __init__(self, self_attention_block:MultiHeadAttentionBlock, feed_forward: FeedForwardBlock, dropout:float):
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.feed_forward = feed_forward
+        self.dropout = nn.Dropout(dropout)
+        self.residual_connections = nn.ModuleList(ResidualConnection(dropout) for _ in range(2))
+
+    def forward(self, x, src_mask):
+        # 这里通过lambda表达式，封装了self_attention_block，封装后其入参只有一个x，符合ResidualConnection.forward中sublayer的要求
+        x = self.residual_connections[0](x, lambda x : self.self_attention_block(x, x, x, src_mask))
+        x = self.residual_connections[1](x, self.feed_forward)
+        return x
+
+
+class Encoder(nn.Module):
+    '''
+    这里他只是用了layerlist作为输入，并没有在里面直接把每一个encoderblock都直接初始化出来
+    '''
+    def __init__(self, layers:nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = LayNormalization()
+    def forward(self, x, mask):
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
+
+
+class DecoderBlock(nn.Module):
+    def __init__(self, self_attention_block:MultiHeadAttentionBlock, cross_attention_block:MultiHeadAttentionBlock,
+                 feed_forward: FeedForwardBlock, dropout:float):
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.cross_attention_block = cross_attention_block
+        self.feed_forward = feed_forward
+        self.dropout = dropout
+        self.residual_connection = nn.ModuleList(ResidualConnection(dropout) for _ in range(3))
+
+    def forward(self,x, encoder_output, src_mask, tgt_mask):
+        x = self.residual_connection[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask)) # 这里的输入x是目标语言，例如英译汉，这里的x是汉语
+        # 在attention模型中，encoder的输出维度(batch_size, seq_len, d_model)的一个矩阵，该矩阵作为cross attention的两个输入
+        ''' encoder的输出作为key和val，而decoder的中间变量作为q来查询encoder的k和v'''
+        x = self.residual_connection[1](x, lambda x: self.cross_attention_block(x, encoder_output, encoder_output, src_mask)) # encoder的输出是针对英文的，
+        x = self.residual_connection[2](x, self.feed_forward)
+        return x
+
+
+class Decoder(nn.Module):
+    def __init__(self, layers:nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = LayNormalization()
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, encoder_output, src_mask, tgt_mask)
+        return self.norm(x)
+
+class ProjectionLayer(nn.Module):
+    def __init__(self, d_model:int,vocab_size:int):
+        super().__init__()
+        # 将矩阵最后一个维度投射到另一个维度上的全连接层
+        self.proj = nn.Linear(d_model, vocab_size)
+
+    def forward(self, x):
+        #(batch_size, seq_len, d_model) -> (batch_size, seq_len, vocab_size) 而且是个概率 softmax输出
+        return torch.log_softmax(self.proj(x), dim = -1)
+
+class TransformerBlock(nn.Module):
+    def __init__(self, encoder:Encoder, decoder:Decoder,
+                 src_embed:InputEmbedding, tgt_embed:InputEmbedding,
+                 src_pos:PositionEncoding, tgt_pos:PositionEncoding,
+                 projection_layer:ProjectionLayer):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.src_embed = src_embed
+        self.tgt_embed = tgt_embed
+        self.src_pos = src_pos
+        self.tgt_pos = tgt_pos
+        self.projection_layer =  projection_layer
+
+    '''encoder是可以重复利用的！推理过程中可以直接使用的'''
+    #
+    # def forward(self, inputs, src_mask, tgt_mask):
+    #     x = self.src_pos(self.src_embed(inputs))
+    #     encoder_output = self.encoder(x, src_mask)
+    #
+    #     output
+    #     x = self.decoder(x, encoder_output, src_mask, tgt_mask)
+
 
 
 
