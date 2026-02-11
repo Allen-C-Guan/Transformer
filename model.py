@@ -6,6 +6,7 @@ import torch.nn as nn
 
 
 class InputEmbedding(nn.Module):
+    # vocab_size 指的是词汇表的大小，既全集又多少个单词
     def __init__(self, d_model:int, vocab_size:int):  # d_model，即模型的大小，模型大小和embedding后的尺寸是一致的
         super().__init__()
         self.d_model = d_model
@@ -15,7 +16,8 @@ class InputEmbedding(nn.Module):
     # 在pytorch中，nn会自动调用forward来实现正向传播
     # Module在__call__中调用了forward，从而实现当实例被call的时候，自动执行forward
     def forward(self, x):
-        return self.embedding(x) * math.sqrt(self.d_model)  # 论文说，讲embedding后要放大sqrt(d_model)倍
+        # 输出维度是：(batch_size, seq_size, d_model)
+        return self.embedding(x) * math.sqrt(self.d_model)  # 论文说，将embedding后要放大sqrt(d_model)倍
 
 
 class PositionEncoding(nn.Module):
@@ -44,13 +46,13 @@ class PositionEncoding(nn.Module):
         # 这里 position * div_term的尺寸为：(seq_len, 1) * (d_model/2) -> boardcast为(seq_len, d_model/2)
 
         '''
-        广播的本质是将纬度从左向右用for循环拆开遍历，每拆开一个for，左边维度就消失一维，直到一个维度和另一个纬度之间维度数量相同（都是2维，或者都是3维）
+        广播的本质是将纬度从左向右用for循环拆开遍历，每拆开一个for，左边维度就消失一维，直到一个维度和另一个纬度之间维度数量相同且都是2维，就可以进行矩阵运算了
         例如：
         A.shape = (2,3,4), B.shape = (4,5)则
         实际发生的是：
            C = torch.empty(2, 3, 5)
            for i in range(2):
-               C[i] = torch.matmul(A[i], B)  # A[i] 形状 [3,4], B 形状 [4,5]，降到这里，两个矩阵维度相同，可以计算了
+               C[i] = torch.matmul(A[i], B)  # A[i] 形状 [3,4], B 形状 [4,5]，降到这里，两个矩阵维度都是2D，可以计算了
         '''
 
         # 这里pe[:, 0::2]的维度也是 seq_len, d_model/2 所以对应位置就会完成赋值！
@@ -94,6 +96,7 @@ class PositionEncoding(nn.Module):
         self.register_buffer("pe", pe)
 
     def forward(self, x):
+        # 输出维度是：(batch_size, seq_size, d_model)
         # 若输入的句子长度为len，则截取embedding的前x个，加到embedding code上去
         # 这里切片的操作是不需要求导的（尽管在buffer里也不会求导，但是显示的写出来）
         # 但是这里x是会被求导的
@@ -112,7 +115,7 @@ class LayNormalization(nn.Module):
         self.bias = nn.Parameter(torch.ones(1))
 
     def forward(self, x):
-        # x的维度应该是：(batch_size, seq_size, d_model(embedding_len))
+        # x的维度应该是 == 输出维度是：(batch_size, seq_size, d_model(embedding_len))
         # d_model的维度求means, means的维度为(batch_size, seq_size, 1)
         mean = torch.mean(x, -1, keepdim=True)
         '''
@@ -142,6 +145,11 @@ class FeedForwardBlock(nn. Module):
         self.linear_2 = nn.Linear(d_ff, d_model, bias=True)  #w2和b2
 
     def forward(self, x):
+        '''
+        :param x:（batch_size, seq_size, d_model)
+
+        :return: x: (batch_size, seq_size, d_model)
+        '''
         # （batch_size, seq_size, d_model)-> ( batch_size, seq_size, d_ff) -> (batch_size, seq_size, d_model)
         '''
         pytorch中矩阵乘法的计算！
@@ -161,7 +169,8 @@ class FeedForwardBlock(nn. Module):
         return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
 
 class MultiHeadAttentionBlock(nn.Module):
-    def __int__(self, d_model:int, h:int, dropout:float):
+
+    def __init__(self, d_model:int, h:int, dropout:float):
         super().__init__()
         self.d_model = d_model
         self.h = h
@@ -176,13 +185,19 @@ class MultiHeadAttentionBlock(nn.Module):
         self.w_0 = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
     @staticmethod
-    def self_attention(query, key, value, mask, dropout = nn.Dropout):
-        # q,k,v的shape为（batch_size, head_num, seq_len, dk)
+    def self_attention(query, key, value, mask, dropout:nn.Dropout):
+        '''
+        input: q,k,v的shape为（batch_size, head_num, seq_len, dk)
+
+        output:(batch_size, h, seq_len, dk)
+        '''
+        # input: q,k,v的shape为（batch_size, head_num, seq_len, dk)
+        # output:(batch_size, h, seq_len, dk)
         d_k = query.shape[-1]
         '''
         矩阵的乘法，只有最后两个维度是数学中矩阵乘法，前面的所有维度仅仅表示2维矩阵的组织形式而已。因此数学的矩阵乘法，只可以针对2D矩阵使用
         '''
-        # (batch_size, h, seq_len, d_model) @ (batch_size, h, d_model, seq_len) -> (batch_size, h, seq_len, seq_len)
+        # query：(batch_size, h, seq_len, dk) @ key.transpose：(batch_size, h, dk, seq_len) -> (batch_size, h, seq_len, seq_len)
         # 这个矩阵表示q和k相互作用后，每两个两个token之间的关系！在乘以K后，表示综合所有token的关系，加权后的值。
         attention_scores = query @ key.transpose(-2,-1)/math.sqrt(d_k)
         if mask is not None:
@@ -199,6 +214,14 @@ class MultiHeadAttentionBlock(nn.Module):
 
 
     def forward(self, q, k, v, mask):
+        '''
+
+        :param q: (batch_size, seq_len, d_model)
+        :param k: (batch_size, seq_len, d_model)
+        :param v: (batch_size, seq_len, d_model)
+        :param mask: (batch_size, seq_len, d_model)
+        :return: (batch_size, seq_len, d_model)
+        '''
         '''
         multi head的计算这里是采用：
         1. 多头QKV一次矩阵计算：在计算QKV的时候，将多个head对应的w_qi, w_ki, w_vi，横向排列为大矩阵w_q, w_k, w_v，尺寸为(batch_size, seq_len, d_model), 然后矩阵相乘，
@@ -337,7 +360,7 @@ class ProjectionLayer(nn.Module):
         #(batch_size, seq_len, d_model) -> (batch_size, seq_len, vocab_size) 而且是个概率 softmax输出
         return torch.log_softmax(self.proj(x), dim = -1)
 
-class TransformerBlock(nn.Module):
+class Transformer(nn.Module):
     def __init__(self, encoder:Encoder, decoder:Decoder,
                  src_embed:InputEmbedding, tgt_embed:InputEmbedding,
                  src_pos:PositionEncoding, tgt_pos:PositionEncoding,
@@ -352,16 +375,70 @@ class TransformerBlock(nn.Module):
         self.projection_layer =  projection_layer
 
     '''encoder是可以重复利用的！推理过程中可以直接使用的'''
-    #
-    # def forward(self, inputs, src_mask, tgt_mask):
-    #     x = self.src_pos(self.src_embed(inputs))
-    #     encoder_output = self.encoder(x, src_mask)
-    #
-    #     output
-    #     x = self.decoder(x, encoder_output, src_mask, tgt_mask)
+    def encode(self, x, src_mask):
+        x = self.src_embed(x)
+        x = self.src_pos(x)
+        return self.encoder(x, src_mask)
+
+    def decode(self, encoder_output, src_mask, tgt, tgt_mask):
+        tgt = self.tgt_embed(tgt)
+        tgt = self.tgt_pos(tgt)
+        return self.decoder(tgt, encoder_output, src_mask, tgt_mask)
+
+    def project(self, x):
+        return self.project(x)
+
+def build_transformer(src_vocab_size:int, tgt_vocab_size:int, src_seq_len:int, tgt_seq_len:int,
+                      d_model:int = 512, N:int = 6, h:int = 8, dropout:float = 0.1, d_ff:int = 2048) -> Transformer:
+    '''
+    如下都是超参数：
+    :param src_vocab_size: 源语言词汇表的大小，指的是全集一共有多少个单词
+    :param tgt_vocab_size: 目标语言词汇表大小
+    :param src_seq_len: 源句子长度
+    :param tgt_seq_len: 目标句子长度
+    :param d_model:
+    :param N: Decoder和Encoder的个数
+    :param h: head 的个数
+    :param dropout:
+    :param d_ff: feed forward个数
+    :return: transformer实例
+    '''
+
+    src_embed = InputEmbedding(d_model,src_vocab_size)
+    tgt_embed = InputEmbedding(d_model, tgt_vocab_size)
+
+    src_pos = PositionEncoding(d_model, src_seq_len, dropout)
+    tgt_pos = PositionEncoding(d_model, tgt_seq_len,dropout)
+
+    encoder_list = []
+    for _ in range(N):
+        attention = MultiHeadAttentionBlock(d_model, h, dropout)
+        ff = FeedForwardBlock(d_model, d_ff, dropout)
+        encoder_block = EncoderBlock(attention, ff, dropout)
+        encoder_list.append(encoder_block)
+
+    encoder = Encoder(nn.ModuleList(encoder_list))
+
+    decoder_list = []
+    for _ in range(N):
+        self_attention = MultiHeadAttentionBlock(d_model, h, dropout)
+        cross_attention = MultiHeadAttentionBlock(d_model, h, dropout)
+        ff = FeedForwardBlock(d_model, d_ff, dropout)
+        decoder_block = DecoderBlock(self_attention, cross_attention, ff, dropout)
+        decoder_list.append(decoder_block)
+
+    decoder = Decoder(nn.ModuleList(decoder_list))
+
+    projection = ProjectionLayer(d_model, tgt_vocab_size)
+    transformer =  Transformer(encoder, decoder,src_embed, tgt_embed, src_pos, tgt_pos, projection)
+
+    # 初始化参数
+    print(transformer.parameters())
+    # module里调用parameter，会递归的向下调用parameter，将所有子孙阶段的param均遍历一遍。
+    for param in transformer.parameters():
+        if param.dim() > 1:
+            nn.init.xavier_uniform_(param)
+    return transformer
 
 
-
-
-
-p = PositionEncoding(4, 4, 0.4)
+transfomer = build_transformer(3,2,10,20)
