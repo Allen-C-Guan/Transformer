@@ -440,5 +440,3 @@ def build_transformer(src_vocab_size:int, tgt_vocab_size:int, src_seq_len:int, t
             nn.init.xavier_uniform_(param)
     return transformer
 
-
-transfomer = build_transformer(3,2,10,20)
