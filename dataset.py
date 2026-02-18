@@ -56,9 +56,10 @@ class BilingualDataset(torch.utils.data.Dataset):
 
         # 先把需要填充的special token计算好
         # 一般情况下，如果编码器和解码器共享词汇表，那么 <pad>、<bos>、<eos> 的 token ID 是一致的。
-        self.sos_token = torch.Tensor([tokenizer_src.token_to_id(["[SOS]"])], dtype=torch.int64)
-        self.pad_token = torch.Tensor([tokenizer_src.token_to_id(["[padding]"])], dtype = torch.int64)
-        self.eos_token = torch.Tensor([tokenizer_src.token_to_id("[EOS]")], dtype=torch.int64)
+        self.sos_token = torch.tensor([tokenizer_src.token_to_id("[SOS]")], dtype=torch.int64)
+        self.pad_token = torch.tensor([tokenizer_src.token_to_id("[PAD]")], dtype = torch.int64)
+        self.eos_token = torch.tensor([tokenizer_src.token_to_id("[EOS]")], dtype=torch.int64)
+
 
     def __len__(self):
         return len(self.ds)
@@ -81,30 +82,31 @@ class BilingualDataset(torch.utils.data.Dataset):
         enc_input = torch.cat(
             [
                 self.sos_token,
-                enc_input_tokens,
+                torch.tensor(enc_input_tokens, dtype=torch.int64),
                 self.eos_token,
-                torch.Tensor([self.pad_token] * enc_pad_len, dtype = torch.int64)
-        ])
+                torch.tensor([self.pad_token] * enc_pad_len, dtype = torch.int64),
+            ],
+            dim=0)
 
         # decoder input : [[sos], [I], [love], [you], [pad], [pad]...]
         dec_input = torch.cat(
             [
                 self.sos_token,
-                dec_input_tokens,
-                torch.Tensor([self.pad_token] * dec_pad_len, dtype=torch.int64)
+                torch.tensor(dec_input_tokens, dtype=torch.int64),
+                torch.tensor([self.pad_token] * dec_pad_len, dtype=torch.int64)
             ]
         )
 
         # label(ground truth) [[I], [love], [you], [EOS], [pad], [pad]...]
         label = torch.cat(
             [
-                self.dec_input_tokens,
+                torch.tensor(dec_input_tokens, dtype=torch.int64),
                 self.eos_token,
-                torch.Tensor([self.pad_token] * dec_pad_len, dtype=torch.int64)
+                torch.tensor([self.pad_token] * dec_pad_len, dtype=torch.int64)
             ]
         )
-
-        assert enc_input.size() == dec_input.size() == label.size() ==  self.seq_len
+        # 前面的类型都是tensor.size()，seq_len是int，需要让tensor返回某个维度的size，然后再比较
+        assert enc_input.size(0) == dec_input.size(0) == label.size(0) ==  self.seq_len
 
         return {
             "encoder_input":enc_input,
@@ -113,7 +115,7 @@ class BilingualDataset(torch.utils.data.Dataset):
             # 将所有等于padding的位置，全部置为false，在将boolen转换为int类型
             "encoder_mask":(enc_input != self.pad_token).unsqueeze(0).unsqueeze(0).int(), # (1,1,seq_len)的矩阵
             # (1, 1, seq_len) & (1, seq_len, seq_len) -> (1, seq_len, seq_len) 只保留下三角（包括对角），上三角为false
-            "decoder_input":(dec_input != self.pad_token).unsqueeze(0).unsqueeze(0).int() & causal_mask(self.seq_len),
+            "decoder_mask":(dec_input != self.pad_token).unsqueeze(0).unsqueeze(0).int() & causal_mask(self.seq_len),
             "src_text": src_lang_text,
             "tgt_text": tgt_lang_text
         }

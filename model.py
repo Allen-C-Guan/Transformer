@@ -6,6 +6,10 @@ import torch.nn as nn
 
 
 class InputEmbedding(nn.Module):
+    '''
+    输入：(batch_size, seq_len)
+    输出：(batch_size, seq_len， d_model)
+    '''
     # vocab_size 指的是词汇表的大小，既全集又多少个单词
     def __init__(self, d_model:int, vocab_size:int):  # d_model，即模型的大小，模型大小和embedding后的尺寸是一致的
         super().__init__()
@@ -15,9 +19,11 @@ class InputEmbedding(nn.Module):
                                                             # 例如将“我”这个词(对应indice为3）转换为[0.1,0.3,0.2,0.5]这样的稠密的矩阵上
     # 在pytorch中，nn会自动调用forward来实现正向传播
     # Module在__call__中调用了forward，从而实现当实例被call的时候，自动执行forward
+
     def forward(self, x):
         # 输出维度是：(batch_size, seq_size, d_model)
-        return self.embedding(x) * math.sqrt(self.d_model)  # 论文说，将embedding后要放大sqrt(d_model)倍
+        x = self.embedding(x) * math.sqrt(self.d_model)  # 论文说，将embedding后要放大sqrt(d_model)倍
+        return x
 
 
 class PositionEncoding(nn.Module):
@@ -61,7 +67,7 @@ class PositionEncoding(nn.Module):
         # 为了让 embedding在于一个batch的数据进行计算时，能顺利的boardcast，
         # 且由于一个batch的输入尺寸应该为(batch_size, seq_size, de_model)
         # 因此针对于pe的(seq_len, de_model)，要想boardcast，需要在第一维度增加一个维度为（1，seq_len, de_model)
-        pe.unsqueeze(0)
+        pe = pe.unsqueeze(0)
 
         '''
         
@@ -100,7 +106,7 @@ class PositionEncoding(nn.Module):
         # 若输入的句子长度为len，则截取embedding的前x个，加到embedding code上去
         # 这里切片的操作是不需要求导的（尽管在buffer里也不会求导，但是显示的写出来）
         # 但是这里x是会被求导的
-        x = x + (self.pe[:, :x.shape[1],:]).requires_grad_(False)
+        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False)  # (batch, seq_len, d_model)
 
         # 这里使用dropout的原因是避免过度依赖位置信息！降低泛化能力
         return self.dropout(x)
@@ -117,8 +123,8 @@ class LayNormalization(nn.Module):
     def forward(self, x):
         # x的维度应该是 == 输出维度是：(batch_size, seq_size, d_model(embedding_len))
         # d_model的维度求means, means的维度为(batch_size, seq_size, 1)
-        mean = torch.mean(x, -1, keepdim=True)
-        '''
+        mean = x.mean(-1, keepdim=True)
+        '''     
         降维指的是：
         tensor([[1.5000],
         [3.5000]])
@@ -132,7 +138,8 @@ class LayNormalization(nn.Module):
 
         std = torch.std(x, -1, keepdim = True)
         # scalar * {(batch_size, seq_size, d_model) - (batch_size, seq_size, 1)}/ {(batch_size, seq_size, 1) - scalar} + scalar
-        return self.alpha * (x - mean)/(std + self.eps) + self.bias
+        x = self.alpha * (x - mean)/(std + self.eps) + self.bias
+        return x # (batch_size, seq_len)
 
 
 class FeedForwardBlock(nn. Module):
@@ -175,7 +182,7 @@ class MultiHeadAttentionBlock(nn.Module):
         self.d_model = d_model
         self.h = h
         assert d_model % h == 0, "d_model can not be divided by head number"
-        self.d_k =  d_model / h
+        self.d_k =  int(d_model / h)
 
         # 只有如下这些才是multi head Attention的parameters，其他的都是计算，不是参数！
         self.w_q = nn.Linear(d_model, d_model)
@@ -212,7 +219,7 @@ class MultiHeadAttentionBlock(nn.Module):
 
 
 
-
+    #  # output:(batch_size, seq_len, d_model)
     def forward(self, q, k, v, mask):
         '''
 
@@ -278,7 +285,8 @@ class MultiHeadAttentionBlock(nn.Module):
         # (batch_size, h, seq_len, d_v)->(batch_size, seq_len, h, d_v)->(batch_size, seq_len, h*d_v=d_model)
         x = x.transpose(1, 2).contiguous().view(x.shape[0],-1, self.d_k * self.h)
         # (batch_size, seq_len, d_model) -> (batch_size, seq_len, d_model)
-        return self.w_0(x)
+        x = self.w_0(x)
+        return x
 
 class ResidualConnection(nn.Module):
     def __init__(self, dropout: float):
@@ -290,6 +298,7 @@ class ResidualConnection(nn.Module):
     # 针对于只有一个入参的sublayer的接口约定，更加抽象，更简洁，更普世
     def forward(self, x, sublayer):  #这里对sublayer要求只要是个一个入参为一个值的，callable的对象即可！
         x = x + self.dropout(sublayer(self.norm(x))) # 如果sublayer有入参咋弄？ 可以通过lambda封装为只有一个入参！
+        return x
 
 class EncoderBlock(nn.Module):
     def __init__(self, self_attention_block:MultiHeadAttentionBlock, feed_forward: FeedForwardBlock, dropout:float):
@@ -298,7 +307,7 @@ class EncoderBlock(nn.Module):
         self.feed_forward = feed_forward
         self.dropout = nn.Dropout(dropout)
         self.residual_connections = nn.ModuleList(ResidualConnection(dropout) for _ in range(2))
-
+    #  # output:(batch_size, seq_len, d_model)
     def forward(self, x, src_mask):
         # 这里通过lambda表达式，封装了self_attention_block，封装后其入参只有一个x，符合ResidualConnection.forward中sublayer的要求
         x = self.residual_connections[0](x, lambda x : self.self_attention_block(x, x, x, src_mask))
@@ -329,7 +338,7 @@ class DecoderBlock(nn.Module):
         self.feed_forward = feed_forward
         self.dropout = dropout
         self.residual_connection = nn.ModuleList(ResidualConnection(dropout) for _ in range(3))
-
+    # output:(batch_size, seq_len, d_model)
     def forward(self,x, encoder_output, src_mask, tgt_mask):
         x = self.residual_connection[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask)) # 这里的输入x是目标语言，例如英译汉，这里的x是汉语
         # 在attention模型中，encoder的输出维度(batch_size, seq_len, d_model)的一个矩阵，该矩阵作为cross attention的两个输入
@@ -386,7 +395,7 @@ class Transformer(nn.Module):
         return self.decoder(tgt, encoder_output, src_mask, tgt_mask)
 
     def project(self, x):
-        return self.project(x)
+        return self.projection_layer(x)
 
 def build_transformer(src_vocab_size:int, tgt_vocab_size:int, src_seq_len:int, tgt_seq_len:int,
                       d_model:int = 512, N:int = 6, h:int = 8, dropout:float = 0.1, d_ff:int = 2048) -> Transformer:
