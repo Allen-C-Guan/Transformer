@@ -7,8 +7,12 @@ import torch.nn as nn
 
 class InputEmbedding(nn.Module):
     '''
-    输入：(batch_size, seq_len)
-    输出：(batch_size, seq_len， d_model)
+
+    forward输入输出
+
+    输入：(batch_size, seq_len) int64类型矩阵
+
+    输出：(batch_size, seq_len， d_model) 增加d_model维度，且类型变为float 32矩阵
     '''
     # vocab_size 指的是词汇表的大小，既全集又多少个单词
     def __init__(self, d_model:int, vocab_size:int):  # d_model，即模型的大小，模型大小和embedding后的尺寸是一致的
@@ -27,6 +31,14 @@ class InputEmbedding(nn.Module):
 
 
 class PositionEncoding(nn.Module):
+    '''
+
+    forward输入输出维度不变
+
+    输入：(batch_size, seq_len， d_model) float32类型矩阵
+
+    输出：(batch_size, seq_len， d_model)
+    '''
     # position中，位置信息的vector大小，与词汇的大小保持一致。
     # seq_len：指的是句子的最大长度是多少？因为position的编码方式和矩阵最大值强相关。
     # dropout：
@@ -112,6 +124,14 @@ class PositionEncoding(nn.Module):
         return self.dropout(x)
 
 class LayNormalization(nn.Module):
+    '''
+
+    forward输入输出维度不变
+
+    输入：(batch_size, seq_len， d_model) float32类型矩阵
+
+    输出：(batch_size, seq_len， d_model)
+    '''
     def __init__(self, eps : float = 10 ** -6):
         super().__init__()
         # eps是防止分母为0的情况
@@ -143,6 +163,14 @@ class LayNormalization(nn.Module):
 
 
 class FeedForwardBlock(nn. Module):
+    '''
+
+    forward输入输出维度不变
+
+    输入：(batch_size, seq_len， d_model)
+
+    输出：(batch_size, seq_len， d_model)
+    '''
     def __init__(self, d_model:int, d_ff:int, dropout:float):
         super().__init__()
         # math: y = xA ^ T + b
@@ -176,6 +204,14 @@ class FeedForwardBlock(nn. Module):
         return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
 
 class MultiHeadAttentionBlock(nn.Module):
+    '''
+
+    forward输入输出维度不变
+
+    输入：(batch_size, seq_len， d_model) float32类型矩阵
+
+    输出：(batch_size, seq_len， d_model)
+    '''
 
     def __init__(self, d_model:int, h:int, dropout:float):
         super().__init__()
@@ -289,6 +325,14 @@ class MultiHeadAttentionBlock(nn.Module):
         return x
 
 class ResidualConnection(nn.Module):
+    '''
+
+    forward输入输出维度不变
+
+    输入：(batch_size, seq_len， d_model) float32类型矩阵
+
+    输出：(batch_size, seq_len， d_model)
+    '''
     def __init__(self, dropout: float):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
@@ -316,6 +360,15 @@ class EncoderBlock(nn.Module):
 
 
 class Encoder(nn.Module):
+    '''
+
+    forward输入输出维度不变
+
+    输入：(batch_size, seq_len， d_model) float32类型矩阵
+
+    输出：(batch_size, seq_len， d_model)
+    '''
+
     '''
     这里他只是用了layerlist作为输入，并没有在里面直接把每一个encoderblock都直接初始化出来
     '''
@@ -349,6 +402,14 @@ class DecoderBlock(nn.Module):
 
 
 class Decoder(nn.Module):
+    '''
+
+    forward输入输出维度不变
+
+    输入：(batch_size, seq_len， d_model) float32类型矩阵
+
+    输出：(batch_size, seq_len， d_model)
+    '''
     def __init__(self, layers:nn.ModuleList):
         super().__init__()
         self.layers = layers
@@ -360,6 +421,14 @@ class Decoder(nn.Module):
         return self.norm(x)
 
 class ProjectionLayer(nn.Module):
+    '''
+
+    forward输入输出维度变化
+
+    输入：(batch_size, seq_len， d_model)
+
+    输出：(batch_size, seq_len, vocab_size)  从d_model变成了词表所有词的概率了
+    '''
     def __init__(self, d_model:int,vocab_size:int):
         super().__init__()
         # 将矩阵最后一个维度投射到另一个维度上的全连接层
