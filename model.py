@@ -534,7 +534,6 @@ def build_transformer(src_vocab_size:int, tgt_vocab_size:int, src_seq_len:int, t
     transformer =  Transformer(encoder, decoder,src_embed, tgt_embed, src_pos, tgt_pos, projection)
 
     # 初始化参数
-    print(transformer.parameters())
     # module里调用parameter，会递归的向下调用parameter，将所有子孙阶段的param均遍历一遍。
     for param in transformer.parameters():
         if param.dim() > 1:

@@ -179,7 +179,7 @@ def get_ds(config):
         max_tgt_len = max(len(tgt_ids), max_tgt_len)
 
     print(f'max src_len is {max_src_len}')
-    print(f"max tgt len is {max_src_len}")
+    print(f"max tgt len is {max_tgt_len}")
 
     return train_dataloader, val_dataloader, src_tokenizer, tgt_tokenizer
 
@@ -301,12 +301,11 @@ def train_model(config):
         # 2). 设置模型为train模式
         # model.train() 是 PyTorch 中用于将模型设置为训练模式的方法。它会递归地将模型及其所有子模块的 training 标志设为 True，
         # 从而影响某些特定层（如 Dropout、BatchNorm 等）在 forward 中的行为。这是因为model在train和eval的时候，某些层的行为有差异
-
+        tmodel.train()
         batch_iterator = tqdm(train_dataloader, desc= f"processing epoch {epoch:02d}") # tqdm接受迭代器，输出进度条
 
         # 3). 遍历batch， 将全量数据分成batch，一次只训练一个batch
         for batch in batch_iterator:
-            tmodel.train()
             # 4). 从dataloader中读取一个batch的数据
             encoder_input = batch["encoder_input"].to(device)  # (B, seq_len)
             decoder_input = batch["decoder_input"].to(device) # (B, seq_len)
@@ -342,9 +341,11 @@ def train_model(config):
 
             # 9). 梯度清理
             optimizer.zero_grad()
-            run_validation(tmodel, val_dataloader, src_tokenizer, tgt_tokenizer, config["seq_len"], device, lambda msg: batch_iterator.write(msg))
-            global_step += 1
 
+            global_step += 1
+        # 每个epoch验证一次。
+        run_validation(tmodel, val_dataloader, src_tokenizer, tgt_tokenizer, config["seq_len"], device,
+                       lambda msg: batch_iterator.write(msg))
         # 8. 保存模型
         model_filename = get_weights_file_path(config, f"{epoch:02d}")
 
