@@ -228,21 +228,26 @@ class MultiHeadAttentionBlock(nn.Module):
         self.w_0 = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
     @staticmethod
+    # 在当前这个例子中，Q和K相同，且均为encode的 multi-attention后的输出
     def self_attention(query, key, value, mask, dropout:nn.Dropout):
         '''
-        input: q,k,v的shape为（batch_size, head_num, seq_len, dk)
+        input: q,k,v的shape为（batch_size, head_num, seq_len, dk)， mask shape (B, 1, 1, seq_len)
 
         output:(batch_size, h, seq_len, dk)
         '''
-        # input: q,k,v的shape为（batch_size, head_num, seq_len, dk)
-        # output:(batch_size, h, seq_len, dk)
         d_k = query.shape[-1]
         '''
         矩阵的乘法，只有最后两个维度是数学中矩阵乘法，前面的所有维度仅仅表示2维矩阵的组织形式而已。因此数学的矩阵乘法，只可以针对2D矩阵使用
         '''
         # query：(batch_size, h, seq_len, dk) @ key.transpose：(batch_size, h, dk, seq_len) -> (batch_size, h, seq_len, seq_len)
         # 这个矩阵表示q和k相互作用后，每两个两个token之间的关系！在乘以K后，表示综合所有token的关系，加权后的值。
+        # QK相乘之后得到的attention，用mask盖住无因果关系的部分
         attention_scores = query @ key.transpose(-2,-1)/math.sqrt(d_k)
+        '''
+        这里mask，
+        encoder调用时候，传入的维度是(batch_size, 1, 1, seq_len)
+        decoder调用时， 传入的维度是(batch_size, 1， seq_len, seq_len) 既包含了因果矩阵的维度。
+        '''
         if mask is not None:
             # 将mask == 0 的位置上的点，对应的改成10^-9的值，这样在softmax就可以变成0
             attention_scores = attention_scores.masked_fill_(mask==0, -1e9)
@@ -267,12 +272,12 @@ class MultiHeadAttentionBlock(nn.Module):
         '''
         '''
         multi head的计算这里是采用：
-        1. 多头QKV一次矩阵计算：在计算QKV的时候，将多个head对应的w_qi, w_ki, w_vi，横向排列为大矩阵w_q, w_k, w_v，尺寸为(batch_size, seq_len, d_model), 然后矩阵相乘，
-        2. 大矩阵w_q, w_k, w_v在d_model维度，拆成h个部分，每个部分长度为d_k，大矩阵重新组织后，尺寸为(batch_size, head, seq_len, d_k)
-        3. 以重组后的大矩阵QKV以(batch_size, head, seq_len, d_k)互相做矩阵乘法，计算attention（矩阵乘法只有后两个维度是矩阵运算，所以多头之间依然的分离的），
+        1. QKV矩阵获取：利用句子embedding，乘以w_q, w_k, w_v分别得到QKV，（这里的QKV等于 将多个head对应的w_qi, w_ki, w_vi，横向排列为大矩阵w_q, w_k, w_v，尺寸为(batch_size, seq_len, d_model), 然后矩阵相乘）
+        2. 大矩阵QKV在d_model维度，拆成h个部分，每个部分长度为d_k，得到多头q，k，v、，大矩阵重新组织后，尺寸为(batch_size, head, seq_len, d_k)
+        3. 以重组后的多头qkv以(batch_size, head, seq_len, d_k)互相做矩阵乘法，得到多头attention（矩阵乘法只有后两个维度是矩阵运算，所以多头之间依然的分离的，头与头之间互相不会参与计算）
                 输出维度和输入一致(batch_size, head, seq_len, d_k)
         4.multi-head attention重新concat回(batch_size, seq_len, d_model)尺寸
-        5.用全连接重新综合多个head的结果，输出尺寸依然为(batch_size, seq_len, d_model)
+        5.用全连接重新综合多个分离运算的head的结果，输出尺寸依然为(batch_size, seq_len, d_model)
 
         这里有个数学背景，既如果
         A= [[a00,a01],
@@ -300,12 +305,12 @@ class MultiHeadAttentionBlock(nn.Module):
         3. 内存效率（权重共享）
         4. 实现简洁性（代码清晰）
         '''
-        # (batch_size, seq_len, d_model)->(batch_size, seq_len, d_model)
+        # step1： 用词语embeding计算QKV：(batch_size, seq_len, d_model)->(batch_size, seq_len, d_model)
         query = self.w_q(q)
         key = self.w_k(k)
         value = self.w_v(v)
 
-
+        # step2： 用QKV计算attention
         # (batch_size, seq_len, d_model)->(batch_size, seq_len, head_num, d_k) -> （batch_size, head_num, seq_len, dk)
         # 最后面那个转置很重要，这意味着转置后，当前两个维度确定后，将会确定一个(seq_len, dk)，表示完整的句子在这个head上的所有特征。
         query = query.view(query.shape[0], query.shape[1], self.h, self.d_k).transpose(1, 2)
@@ -320,7 +325,7 @@ class MultiHeadAttentionBlock(nn.Module):
         '''
         # (batch_size, h, seq_len, d_v)->(batch_size, seq_len, h, d_v)->(batch_size, seq_len, h*d_v=d_model)
         x = x.transpose(1, 2).contiguous().view(x.shape[0],-1, self.d_k * self.h)
-        # (batch_size, seq_len, d_model) -> (batch_size, seq_len, d_model)
+        # (batch_size, seq_len, d_model) * (batch_size, d_model, d_model) -> (batch_size, seq_len, d_model)
         x = self.w_0(x)
         return x
 
@@ -480,8 +485,26 @@ def build_transformer(src_vocab_size:int, tgt_vocab_size:int, src_seq_len:int, t
     :param dropout:
     :param d_ff: feed forward个数
     :return: transformer实例
-    '''
 
+    transformer中，各维度的输出：
+
+    在src部分：
+
+    src_input: (batch_size, seq_len)
+
+    input_embedding: (batch_size, seq_len) -> (batch_size, seq_len, d_model)
+
+    encoder: (batch_size, seq_len, d_model) -> (batch_size, seq_len, d_model)
+
+    在tgt部分：
+    tgt_input: (batch_size, seq_len)
+
+    input_embedding:(batch_size, seq_len)->(batch_size, seq_len, d_model)
+
+    decoder：input_embedding:(batch_size, seq_len, d_model)， encoder output：((batch_size, seq_len, d_model) -> (batch_size, seq_len, d_model)
+
+    project:(batch_size, seq_len， d_model) -> (batch_size, seq_len, vocab_size)
+    '''
     src_embed = InputEmbedding(d_model,src_vocab_size)
     tgt_embed = InputEmbedding(d_model, tgt_vocab_size)
 

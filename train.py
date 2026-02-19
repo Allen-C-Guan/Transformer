@@ -10,6 +10,10 @@ import dataset
 import model
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+
+from dataset import causal_mask
+from model import Transformer
+
 '''
 tokenizers 是可训练的，并负责将文本拆分为原语（token），并将每个原语转换为模型可接受的数字 ID。
 token可以是词，例如love，id是数字：例如30，
@@ -48,6 +52,60 @@ from tokenizers.pre_tokenizers import Whitespace
 重要性：预分词是分词流程的第一步，决定了模型看到的“词单元”边界。Whitespace 是最常用的预分词器之一，其他还有 ByteLevel、Metaspace 等。
 '''
 from pathlib import Path
+
+
+def greedy_decode(tmodel:Transformer, source, source_mask, tokenizer_src:Tokenizer, tokenizer_tgt: Tokenizer, max_len, device):
+    sos_idx = tokenizer_tgt.token_to_id("[SOS]")
+    eos_idx = tokenizer_tgt.token_to_id("[EOS]")
+
+    # 1). 先得到encode的output，后面推理的时候就不变了
+    encoder_output = tmodel.encode(source, source_mask) # (batch, seq_len, d_model)
+    # 2). 初始化decode的输入，以sos 为内容初始化
+    decode_input = torch.empty(1, 1).fill_(sos_idx).type_as(source).to(device)
+    while True:
+        if decode_input.shape[1] >= max_len:
+            break
+        tgt_mask = causal_mask(decode_input.shape[1]).type_as(source_mask).to(device)
+        # 3). decode进行预测
+        out = tmodel.decode(encoder_output, source_mask, decode_input, tgt_mask)
+        # 4). project 只需要proj最后一列，因为只有最后一列是刚被预测出来的
+        prob = tmodel.project(out[:, -1])
+        # 5). 选择最大的一个(betch, vocab_size)，该位置下的所有词汇中，概率最大的词汇
+        _, next_word = torch.max(prob, dim=-1)
+        # 6). 加到之前的句子中
+        decode_input = torch.cat([decode_input, torch.empty(1,1).type_as(source).fill_(next_word.item()).to(device)], dim=1)
+        # 7).判断是否预测到了 end
+        if next_word == eos_idx:
+            break
+
+    return decode_input.squeeze(0)
+
+
+def run_validation(tmodel:Transformer, validation_dataloader, tokenizer_src, tokenizer_tgt, max_len, device, print_msg, num_examples = 2):
+    tmodel.eval()
+    count = 0
+    console_width = 80
+    with torch.no_grad():
+        for batch in validation_dataloader:
+            count += 1
+            encoder_input = batch["encoder_input"].to(device)  # (1, seq_len)
+            encoder_mask= batch["encoder_mask"].to(device) # (1,1,1,350)
+
+            assert encoder_input.size(0) == 1
+
+            model_out = greedy_decode(tmodel, encoder_input, encoder_mask, tokenizer_src, tokenizer_tgt, max_len, device)
+
+            source_txt = batch['src_text']
+            tgt_txt = batch["tgt_text"]
+            pred_txt = tokenizer_tgt.decode(model_out.detach().cpu().numpy())
+
+            print_msg("-"*console_width)
+            print_msg(f"SOURCE: {source_txt}")
+            print_msg(f"TRAGET: {tgt_txt}")
+            print_msg(f"PREDICTED: {pred_txt}")
+
+            if count >= num_examples:
+                break
 
 
 def get_all_sentences(ds,lang):
@@ -207,7 +265,7 @@ def train_model(config):
 
     pathlib.Path(config["model_folder"]).mkdir(parents=True, exist_ok=True)
 
-    # 2. 构造dataset
+    # 2. 构造dataset：构造过程中，src， tgt tokenizer都已经训练好，装载到dataset中，并将dataset装载到dataloader中，
     train_dataloader, val_dataloader, src_tokenizer, tgt_tokenizer = get_ds(config)
 
     # 3. 构造model
@@ -238,24 +296,29 @@ def train_model(config):
     loss_fn = nn.CrossEntropyLoss(ignore_index=src_tokenizer.token_to_id("[PAD]"), label_smoothing=0.1).to(device)
 
     # 7. 迭代训练
+    # 1). 遍历epoch，每个epoch是一次全数据集的遍历训练
     for epoch in range(initial_epoch, config["num_epochs"]):
-        # 1). 设置模型为train模式
+        # 2). 设置模型为train模式
         # model.train() 是 PyTorch 中用于将模型设置为训练模式的方法。它会递归地将模型及其所有子模块的 training 标志设为 True，
         # 从而影响某些特定层（如 Dropout、BatchNorm 等）在 forward 中的行为。这是因为model在train和eval的时候，某些层的行为有差异
-        tmodel.train()
+
         batch_iterator = tqdm(train_dataloader, desc= f"processing epoch {epoch:02d}") # tqdm接受迭代器，输出进度条
+
+        # 3). 遍历batch， 将全量数据分成batch，一次只训练一个batch
         for batch in batch_iterator:
+            tmodel.train()
+            # 4). 从dataloader中读取一个batch的数据
             encoder_input = batch["encoder_input"].to(device)  # (B, seq_len)
             decoder_input = batch["decoder_input"].to(device) # (B, seq_len)
             encoder_mask = batch["encoder_mask"].to(device) # (B,1,1,seq_len)
             decoder_mask = batch["decoder_mask"].to(device) # (B, 1, seq_len, seq_len)
 
-            # 2). 获取输出前向传播的输出
+            # 5). 获取输出前向传播的输出
             encoder_output = tmodel.encode(encoder_input, encoder_mask) # (B, seq_len, d_model)
             decoder_output = tmodel.decode(encoder_output, encoder_mask, decoder_input, decoder_mask) # (B, seq_len, d_model)
             proj_output = tmodel.project(decoder_output)  # (B, seq_len, vocab_size)
 
-            # 3). 计算loss
+            # 6). 计算loss
             label = batch["label"].to(device) # (B, seq_len)
             '''
             proj_output的shape：(B, seq_len, vocab_size)->(B * seq_len, vocab_size)
@@ -271,15 +334,15 @@ def train_model(config):
             writer.add_scalar('train loss', loss.item(), global_step)
             writer.flush()
 
-            # 4). 反向传播
+            # 7). 反向传播
             loss.backward()
 
-            # 5). 更新梯度
+            # 8). 更新梯度
             optimizer.step()
 
-            # 6). 梯度清理
+            # 9). 梯度清理
             optimizer.zero_grad()
-
+            run_validation(tmodel, val_dataloader, src_tokenizer, tgt_tokenizer, config["seq_len"], device, lambda msg: batch_iterator.write(msg))
             global_step += 1
 
         # 8. 保存模型

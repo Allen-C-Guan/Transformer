@@ -107,7 +107,6 @@ class BilingualDataset(torch.utils.data.Dataset):
         )
         # 前面的类型都是tensor.size()，seq_len是int，需要让tensor返回某个维度的size，然后再比较
         assert enc_input.size(0) == dec_input.size(0) == label.size(0) ==  self.seq_len
-
         return {
             "encoder_input":enc_input,
             "decoder_input":dec_input,
